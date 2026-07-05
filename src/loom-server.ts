@@ -10,6 +10,7 @@ import { Supervisor } from './supervisor.js';
 import { ContextMatrix } from './store.js';
 import { intercept } from './interceptor.js';
 import { redactArgs, buildEnvelope } from './envelope.js';
+import { makeIsDenylisted } from './denylist.js';
 import { QUERY_DESCRIPTION, LIST_DATASETS_DESCRIPTION, DESCRIBE_DESCRIPTION, EXPORT_DESCRIPTION, MATERIALIZE_DESCRIPTION } from './tool-descriptions.js';
 import type { LoomConfig, LoomDatasetRef } from './types.js';
 import { log } from './log.js';
@@ -54,6 +55,10 @@ export interface LoomHandle {
 }
 
 export function createLoomServer(config: LoomConfig, version: string): LoomHandle {
+  // One predicate, resolved from config, feeds every provenance-args egress point
+  // (intercept envelope, loom_describe, loom_list_datasets, loom_materialize) —
+  // computed from each record's provenance.server+tool, never threaded.
+  const isDenylisted = makeIsDenylisted(config.servers);
   const gateway = new DownstreamGateway();
   const spillDir = mkdtempSync(join(tmpdir(), 'loom-spill-'));
   const store = new ContextMatrix({
@@ -77,16 +82,15 @@ export function createLoomServer(config: LoomConfig, version: string): LoomHandl
     const toolError = (msg: string): CallToolResult => ({ content: [{ type: 'text', text: msg }], isError: true });
 
     if (name === 'loom_list_datasets') {
-      // Provenance.args is stored raw (SPEC comment, types.ts); redact here same
-      // as buildEnvelope does, so listings never re-surface secrets (SPEC §5 rule 7,
-      // §5 rule 7). Denylisted=false — the per-tool provenanceDenylist is optional, but
-      // redactArgs still strips secret-shaped keys (api_key/token/password/...) at
-      // every depth.
+      // Provenance.args is stored raw (SPEC comment, types.ts); redact here same as
+      // buildEnvelope does, so listings never re-surface secrets (SPEC §5 rule 7).
+      // Denylisting is resolved from each record's server+tool; non-denylisted args
+      // still get the secret-shaped-key redaction at every depth.
       const datasets = store.list().map((r) => ({
         ref: r.ref, rows: r.rows, bytes: r.bytes,
         ageSeconds: Math.round((Date.now() - Date.parse(r.provenance.createdAt)) / 1000),
         pinned: r.pinned, implicit: r.implicit,
-        provenance: { ...r.provenance, args: redactArgs(r.provenance.args, false) },
+        provenance: { ...r.provenance, args: redactArgs(r.provenance.args, isDenylisted(r.provenance.server, r.provenance.tool)) },
       }));
       return { content: [{ type: 'text', text: JSON.stringify(datasets) }] };
     }
@@ -104,7 +108,7 @@ export function createLoomServer(config: LoomConfig, version: string): LoomHandl
         return await store.handoff<{ rows: Record<string, unknown>[]; rowCount: number }, CallToolResult>(
           () => store.query(sql),
           async (q) => {
-            const outcome = await intercept(inlineOf(q), { server: 'loom', tool: 'query', args: { sql }, reentry: true, depth: 0 }, store, config.tokenThreshold);
+            const outcome = await intercept(inlineOf(q), { server: 'loom', tool: 'query', args: { sql }, reentry: true, depth: 0 }, store, config.tokenThreshold, isDenylisted);
             return outcome.intercepted ? envelopeToResult(outcome.envelope) : inlineOf(q);
           },
           (q) => inlineOf(q), // G3: re-entry threw → return the plain query result
@@ -117,7 +121,7 @@ export function createLoomServer(config: LoomConfig, version: string): LoomHandl
 
     if (name === 'loom_describe') {
       try {
-        const d = await store.describe(String(args?.ref ?? ''));
+        const d = await store.describe(String(args?.ref ?? ''), isDenylisted);
         return { content: [{ type: 'text', text: JSON.stringify(d) }] };
       } catch (e) {
         return toolError(`loom_describe failed: ${(e as Error).message}`);
@@ -137,7 +141,7 @@ export function createLoomServer(config: LoomConfig, version: string): LoomHandl
       try {
         const { record, sample } = await store.materialize(String(args?.sql ?? ''), String(args?.name ?? ''));
         const hints = await store.joinHintsFor(record.ref);
-        const env = buildEnvelope({ record, sample, hints, context: {}, denylisted: false, approxTokensSaved: 0 });
+        const env = buildEnvelope({ record, sample, hints, context: {}, isDenylisted, approxTokensSaved: 0 });
         return { content: [{ type: 'text', text: JSON.stringify(env) }] };
       } catch (e) {
         return toolError(`loom_materialize failed: ${(e as Error).message}`);
@@ -150,7 +154,7 @@ export function createLoomServer(config: LoomConfig, version: string): LoomHandl
     const route = gateway.routeOf(name);
     const result = await gateway.callExposed(name, args);
     if (!route) return result;
-    const outcome = await intercept(result, { server: route.server, tool: route.originalName, args }, store, config.tokenThreshold);
+    const outcome = await intercept(result, { server: route.server, tool: route.originalName, args }, store, config.tokenThreshold, isDenylisted);
     return outcome.intercepted ? envelopeToResult(outcome.envelope) : outcome.result;
   });
 

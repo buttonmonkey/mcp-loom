@@ -9,6 +9,7 @@ import { deriveSchema, flattenRows } from './flatten.js';
 import { log } from './log.js';
 import { structuralJoinHints } from './hints.js';
 import { buildDescription, type LoomDatasetDescription } from './envelope.js';
+import type { IsDenylisted } from './denylist.js';
 
 function csvCell(v: unknown): string {
   if (v === null || v === undefined) return '';
@@ -377,7 +378,7 @@ export class ContextMatrix {
     });
   }
 
-  // SPEC §7 loom_materialize (reviewer ruling: reuse the ingest path, not
+  // SPEC §7 loom_materialize (design ruling: reuse the ingest path, not
   // CREATE TABLE AS). Run the model's guarded SELECT on the read lane, then push
   // its rows through the SAME flatten/ingest path as any dataset — inheriting the
   // caps, the guard, profiling, and the envelope machinery — as a PINNED view.
@@ -554,7 +555,7 @@ export class ContextMatrix {
   // Unknown ref throws an error listing known refs (the recovery cue the model
   // needs). Reading the sample bumps lastAccessed via query() (describe is an
   // access). Provenance is redacted by buildEnvelope (both-egress rule, C4).
-  async describe(ref: string): Promise<LoomDatasetDescription> {
+  async describe(ref: string, isDenylisted: IsDenylisted): Promise<LoomDatasetDescription> {
     const record = this.registry.get(ref);
     if (!record) {
       const known = this.list().map((r) => r.ref).join(', ') || '(none)';
@@ -563,7 +564,7 @@ export class ContextMatrix {
     const { rows: sample } = await this.query(`SELECT * FROM "${record.table}" LIMIT 10`);
     const hints = await this.joinHintsFor(ref);
     const ageSeconds = Math.round((Date.now() - Date.parse(record.provenance.createdAt)) / 1000);
-    return buildDescription({ record, sample, hints, ageSeconds });
+    return buildDescription({ record, sample, hints, ageSeconds, isDenylisted });
   }
 
   async close(): Promise<void> {

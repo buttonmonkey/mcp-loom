@@ -5,6 +5,7 @@
 // first-pass downstream results — depth-1 only (SPEC §7 table).
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { LoomDatasetRef, Provenance } from './types.js';
+import type { IsDenylisted } from './denylist.js';
 import { concatTextBlocks, estimateTokens, hasNonTextBlock, type ContentBlock } from './estimate.js';
 import { deriveSchema, flattenRows } from './flatten.js';
 import { extractRecords } from './extract.js';
@@ -17,7 +18,6 @@ export interface InterceptMeta {
   tool: string;
   args: unknown;
   reentry?: boolean;
-  denylisted?: boolean;
   depth?: number; // implicit ingests already performed in this upstream call (D2)
 }
 
@@ -77,6 +77,7 @@ export async function intercept(
   meta: InterceptMeta,
   store: StoreLike,
   tokenThreshold: number,
+  isDenylisted: IsDenylisted,
 ): Promise<InterceptOutcome> {
   const pass = (): InterceptOutcome => ({ intercepted: false, result });
   const content = (result.content ?? []) as ContentBlock[];
@@ -152,7 +153,7 @@ export async function intercept(
 
     const hints = await store.scoredJoinHints(record);
     // rule 8 — envelope-cost guard: build, then discard if it doesn't save tokens.
-    const draft = buildEnvelope({ record, sample, hints, context, denylisted: meta.denylisted ?? false, approxTokensSaved: 0 });
+    const draft = buildEnvelope({ record, sample, hints, context, isDenylisted, approxTokensSaved: 0 });
     const envelopeTokens = estimateTokens(JSON.stringify(draft));
     if (envelopeTokens >= originalTokens) {
       await store.drop(ref);

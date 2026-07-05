@@ -1,1 +1,183 @@
-# mcp-loom
+```
+   ███╗   ███╗ ██████╗██████╗       ██╗      ██████╗  ██████╗ ███╗   ███╗
+   ████╗ ████║██╔════╝██╔══██╗      ██║     ██╔═══██╗██╔═══██╗████╗ ████║
+   ██╔████╔██║██║     ██████╔╝█████╗██║     ██║   ██║██║   ██║██╔████╔██║
+   ██║╚██╔╝██║██║     ██╔═══╝ ╚════╝██║     ██║   ██║██║   ██║██║╚██╔╝██║
+   ██║ ╚═╝ ██║╚██████╗██║           ███████╗╚██████╔╝╚██████╔╝██║ ╚═╝ ██║
+   ╚═╝     ╚═╝ ╚═════╝╚═╝           ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝
+
+
+   The context loom for MCP.
+
+   One proxy in front of N servers. Oversized tool results are woven
+   into queryable datasets — 48k tokens in, 2k envelope out.
+
+
+   warp: results stream in         weft: the loom shuttles across
+   ══════════════════════          ═════════════════════════════
+
+       │    │    │    │
+       │    │    │    │     48,377 tokens ┄┄┄┄┄┄┄┄┄> ✂ intercept
+       ●━━━━┿━━━━┿━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+       │    ●━━━━┿━━━━┿━━━━━━━ ingest → DuckDB ━━━━━━┫
+       │    │    ●━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+       │    │    │    ●━━━━ schema · stats · joins ━━┛
+       │    │    │    │                              │
+       ▼    ▼    ▼    ▼                              ▼
+     [ raw floods, dropped ]           [ 2,104-token envelope ]
+                                         ref · sample · SQL
+```
+
+![npm](https://img.shields.io/npm/v/mcp-loom?color=e8b64c&labelColor=171d33)
+&nbsp;![license](https://img.shields.io/badge/license-MIT-3d4e8f?labelColor=171d33)
+&nbsp;![node](https://img.shields.io/badge/node-%E2%89%A520-3d4e8f?labelColor=171d33)
+
+## What it does
+
+An MCP client asks a tool a question, and the answer comes back as a ten-thousand-row JSON dump — most of which the model didn't need but now has to hold in context. Loom sits in the middle.
+
+When a result is small, it passes through untouched. When a result is large and tabular, Loom ingests it into an embedded DuckDB and hands the model a compact **envelope** instead: a dataset ref, the schema, column stats, a few sample rows, join hints, and provenance. The model then queries precisely what it needs — including joins across data from *different* servers, which no single server can answer alone.
+
+The economics: a 48k-token tool result becomes a ~2k-token envelope. The model spends its context on answers, not raw dumps.
+
+## When loom helps — and when it won't
+
+Loom earns its place in three situations that cover the ordinary case of real MCP usage:
+
+- **Clients with no shell.** Claude Desktop, mobile, and agent platforms — the largest client surfaces — have no CLI to fall back to. MCP tools are the model's only path to the data, so interception engages by construction.
+- **Servers with no model-reachable CLI.** Internal tools, SaaS connectors, and credentialed databases whose secrets live only in the server's `env` block — the bulk of real connectors. There is no `gh`-equivalent for the model to route around.
+- **Auditable analysis over persistent datasets.** Loom turns "the model eyeballed a dump" into "the model ran verifiable queries over data you can still inspect" — exact SQL over provenance-stamped datasets that stay reopenable and re-queryable after the fact. This one applies *everywhere*, shell or no shell, and is the honest answer to "why route through loom at all."
+
+Cross-server joins run through all three: no single CLI answers a question spanning two services' data.
+
+Two boundaries, stated plainly:
+
+- **A shell-bearing agent will skip the MCP layer for a service it can reach directly.** Give a model `bash` and a service with a known CLI and ambient credentials — `gh` against GitHub is the sharpest case — and it goes straight to the CLI, faster and cheaper, skipping loom and MCP both. That is the agent preferring a CLI to MCP, not a loom defect; loom is an MCP-layer product and will not beat `gh` at being `gh`. It is also the minority case: most servers wrap things with no model-reachable CLI, and the largest client surfaces have no shell.
+- **Envelope fidelity is bounded by what the downstream returns.** Loom flattens faithfully what a server sends — but it cannot add fields the server never sent. The GitHub MCP server, for instance, returns a trimmed 17-field repo object (no `stargazersCount`, `language`, or `forks`); loom captured all 17 faithfully, and a star-ranking question was still unanswerable from that data. The bound is the downstream's, not loom's.
+
+## How it works
+
+Loom is itself a stdio MCP server. It sits between one upstream MCP client (Claude Desktop, Claude Code, Cursor, etc.) and N downstream MCP servers that you configure:
+
+- Spawns and supervises each configured downstream server (handshake health check, restart with backoff, delists tools and emits `list_changed` if a server exhausts its restart budget).
+- Namespaces every downstream tool as `<server>_<tool>` and re-exposes the aggregated tool list upward, keeping it live via `list_changed`.
+- Routes `call_tool` to the correct downstream child. Small results return unmodified — pass-through is byte-identical. Large tabular results are intercepted into DuckDB and replaced with a `loom_dataset_ref` envelope; any interception failure degrades to the untouched original.
+- Exposes the synthetic query surface over cached datasets: `loom_query` (guarded read-only SQL, cross-server joins included), `loom_list_datasets`, `loom_describe` (full schema, stats, and fresh join hints for a dataset), `loom_materialize` (pin a derived query result as a new dataset), and `loom_export` (sealed csv/json export). Interception depth is capped at 1 per upstream call; `loom_materialize` does not consume that budget.
+- Shuts down cleanly on signals or upward stdin EOF, with no orphaned child processes and the spill dir removed.
+
+Loom intercepts both structured results and formatted text: when a result carries a `structuredContent` channel it ingests from that; otherwise it parses JSON-in-text, and failing that, extracts repeating records from formatted text under a strict never-lie bar (it never emits a table it isn't sure of — any uncertainty degrades to an untouched pass-through). See [SPEC.md](./SPEC.md) for the full normative specification.
+
+## Usage
+
+```bash
+npx mcp-loom --config loom.config.json
+```
+
+Point any MCP client at that command. Configuration can also be supplied via the `LOOM_CONFIG` environment variable instead of `--config`:
+
+```bash
+LOOM_CONFIG=/path/to/loom.config.json npx mcp-loom
+```
+
+(`--config` takes precedence if both are set.) See [`loom.config.example.json`](./loom.config.example.json) for a minimal working example.
+
+## Client recipes
+
+Loom is launched by your MCP client the same way any stdio server is — point the client at `npx -y mcp-loom --config <absolute path to loom.config.json>`.
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "loom": {
+      "command": "npx",
+      "args": ["-y", "mcp-loom", "--config", "/absolute/path/to/loom.config.json"]
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`): the same `mcpServers` block as above.
+
+**Claude Code** — add it from the CLI:
+
+```bash
+claude mcp add loom -- npx -y mcp-loom --config /absolute/path/to/loom.config.json
+```
+
+Use an **absolute** path to `loom.config.json` — MCP clients spawn servers with an unspecified working directory. Loom then spawns and namespaces the downstream servers listed in that config.
+
+## Config reference
+
+Config is a single JSON file, validated with zod at startup; invalid config fails fast with a readable error listing every violated field.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `servers` | array (min 1) | — (required) | The downstream servers to proxy. See below. |
+| `servers[].name` | string | — (required) | Must match `^[a-z][a-z0-9_]{0,31}$`, unique across all servers. `loom` is reserved (used exclusively for synthetic tools) and rejected. |
+| `servers[].command` | string | — (required) | Executable to spawn (e.g. `npx`). Non-empty. |
+| `servers[].args` | array of strings | `[]` | Args passed to `command`. |
+| `servers[].env` | object (string→string) | `{}` | Extra environment variables for **this server's child process only**. See "Child environment" below. |
+| `tokenThreshold` | integer ≥ 100 | `2000` | Interception fires when a tabularizable text result exceeds this; a coarse chars/4 order-of-magnitude dial, NOT precise (undercounts CJK). |
+| `memoryBudgetBytes` | integer ≥ 1048576 | `268435456` (256 MiB) | Soft eviction budget on tracked dataset bytes; implicit query-result datasets evict LRU-first, then downstream ingests. |
+| `duckdbMemoryLimit` | string, `/^\d+(\.\d+)?(KB\|MB\|GB\|TB)$/` | `"512MB"` | Hard engine backstop (`SET memory_limit`); ops spill to disk under a computed thread bound rather than OOM. |
+| `exportDir` | string | `"./exports"` | Directory where `loom_export` writes csv and json files. |
+| `queryTimeoutMs` | integer ≥ 1 | `30000` | Bounds a `loom_query` (interrupt()-timer). |
+| `restart.maxAttempts` | integer ≥ 0 | `5` | Max consecutive restart attempts per downstream server before it is delisted (tools removed, `list_changed` emitted). `0` disables restart. |
+| `restart.baseDelayMs` | integer ≥ 1 | `1000` | Base delay for restart backoff. |
+
+If **every** configured server fails to start, Loom itself fails to start (fatal). If only some fail, Loom starts with a warning and the surviving servers' tools available.
+
+## Interception & querying
+
+Large tabular tool results are intercepted and ingested into the embedded DuckDB store as queryable datasets. A tool result that exceeds `tokenThreshold` and carries structured data — read from the protocol's `structuredContent` channel when present, otherwise parsed from the text render — becomes a `loom_dataset_ref` envelope: a reference ID, the inferred schema, column statistics, sample rows, and join hints — keeping the token cost low. Query these datasets with the synthetic `loom_query` tool: it accepts read-only SQL in DuckDB dialect (single SELECT or WITH statement), classified read-only by the engine parser. If you lose a dataset reference, `loom_list_datasets` recovers it or lists all available datasets in the current session.
+
+Dataset references are **session-scoped**: they exist only for the duration of your conversation and are automatically evicted under memory pressure (implicit query results are evicted first, preserving explicitly-ingested data longer). Sample rows in the envelope are **arbitrary** — DuckDB does not preserve insertion order by default — so always use an explicit `ORDER BY` clause when row order matters. The token estimator is a coarse magnitude dial and undercounts text containing CJK characters, so monitor actual token usage if you regularly cross `tokenThreshold`.
+
+### Inspecting datasets with `loom_describe`
+
+Call `loom_describe` on a dataset ref to inspect its structure and contents in detail: full schema with per-column statistics, a 10-row sample, fresh join hints to other datasets (with value-overlap scores that rank real joins above coincidental name matches), provenance, and creation timestamp. Use this when you need to understand a dataset's shape before querying it, or to rediscover a dataset's schema after many intermediate operations.
+
+### Materializing query results with `loom_materialize`
+
+Query results are cached implicitly, but if you want to keep a derived result across the session boundary or ensure it is never evicted, use `loom_materialize`: pass a read-only SELECT statement and get back a new pinned `loom_dataset_ref` envelope. The materialized dataset is never evicted under memory pressure. **Important:** materialized datasets are stored in their JSON text representations, so date and decimal columns become text strings. Include a CAST in your SELECT if you need date arithmetic or numeric operations on the materialized result — for example, `SELECT CAST(created_at AS DATE) FROM ...` to materialize a queryable date column.
+
+### Exporting datasets with `loom_export` (sealed boundary)
+
+Export a cached dataset to a file with `loom_export`: it writes the dataset as csv or json (only these formats are supported) under the configured `exportDir` and returns the absolute path to the written file. This is the move for taking a result outside the session.
+
+**The sealed export boundary:** The Loom engine never touches the filesystem. Export is a read-lane SELECT statement serialized to text in the Node process and written by the MCP server, not by DuckDB. This is a deliberate security choice: the engine parser enforces statement-type classification (read-only vs. write), and the engine itself is sealed against filesystem operations (`COPY TO` is disabled and remains disabled). The security boundary is the engine's immutable statement classification, not runtime filtering; this ensures no query can be misclassified or elevated to filesystem access at runtime.
+
+## Namespacing
+
+Every downstream tool is re-exposed upstream as `<server>_<tool>`, where `<server>` is the config name for that server. Routing is done through an internal bidirectional map (exposed name ⇄ server + original tool name) — never by splitting the exposed name on `_` — so server names containing underscores work correctly. Names that would exceed common client limits (64 chars) are deterministically truncated with a hash suffix; post-sanitization collisions get a numeric suffix. `loom` is a reserved server name so that a `loom_`-prefixed synthetic tool can never collide with a real downstream tool.
+
+## Child environment (read this before putting secrets anywhere)
+
+Each downstream child process's environment is **Loom's own environment overlaid with that server's `env` block from config** — not a clean/sandboxed environment. Practical consequence: anything exported in the shell that launches Loom (your `GITHUB_TOKEN`, your `AWS_SECRET_ACCESS_KEY`, everything) is visible to **every** downstream child, not just the one that needs it.
+
+Put per-server secrets in that server's own `env` block in `loom.config.json`:
+
+```json
+{ "name": "repo", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "ghp_..." } }
+```
+
+Do **not** rely on the launching shell's environment to scope a secret to one server — Loom does not filter or isolate child environments from its own.
+
+## Gotchas
+
+- **Child environment is inherited, not sandboxed.** Every downstream child sees Loom's own environment overlaid with its per-server `env`. Put per-server secrets in that server's `env` block, never in the launching shell (full detail in [Child environment](#child-environment-read-this-before-putting-secrets-anywhere) above).
+- **The token threshold is a coarse dial.** Interception fires on a `chars/4` estimate — an order-of-magnitude trigger, not a precise token count, and it undercounts CJK text. Treat `tokenThreshold` as a magnitude knob, not a boundary. The estimate covers the whole result — text blocks plus serialized `structuredContent` when present.
+- **Export is sealed, and it re-serializes in Node.** `loom_export` writes csv/json by serializing the read-lane query result to text **in the Node process** — the engine never writes files (`COPY TO` stays disabled). The cost is a JS-side serialization pass over the exported rows: bounded and well under budget for session-sized datasets (a 100k-row export measured ~0.42s), but real — an export is a copy, not a zero-cost handle.
+- **Dataset refs are session-scoped and evictable.** Refs live only for the conversation and are evicted under memory pressure — implicit query results first, explicit ingests last; materialized refs are pinned and never evicted. Sample rows are arbitrary unless you `ORDER BY`.
+- **Downstream `outputSchema` is not re-exposed.** Loom may replace any large result with a `loom_dataset_ref` envelope, so it cannot honestly advertise a downstream tool's declared output shape — a re-advertised schema would make spec-strict clients reject every intercepted result. The cost: clients don't schema-*validate* structured output for tools proxied through Loom; `structuredContent` itself still passes through untouched on small results.
+
+## Development
+
+```bash
+npm ci
+npm run build    # TypeScript compile (tsc)
+```
+
+`stdout` is the protocol — all logging goes to `stderr`. The full specification, including the interception rules and the extraction contract, is in [SPEC.md](./SPEC.md).

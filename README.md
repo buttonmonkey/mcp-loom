@@ -119,6 +119,7 @@ Config is a single JSON file, validated with zod at startup; invalid config fail
 | `servers[].command` | string | — (required) | Executable to spawn (e.g. `npx`). Non-empty. |
 | `servers[].args` | array of strings | `[]` | Args passed to `command`. |
 | `servers[].env` | object (string→string) | `{}` | Extra environment variables for **this server's child process only**. See "Child environment" below. |
+| `servers[].envPassthrough` | array of strings | `[]` | Names of extra **non-secret** vars to forward from Loom's own environment to this server's child, on top of the curated safe base (default-deny — the launching shell's env is not copied wholesale). See "Child environment" below. |
 | `tokenThreshold` | integer ≥ 100 | `2000` | Interception fires when a tabularizable text result exceeds this; a coarse chars/4 order-of-magnitude dial, NOT precise (undercounts CJK). |
 | `memoryBudgetBytes` | integer ≥ 1048576 | `268435456` (256 MiB) | Soft eviction budget on tracked dataset bytes; implicit query-result datasets evict LRU-first, then downstream ingests. |
 | `duckdbMemoryLimit` | string, `/^\d+(\.\d+)?(KB\|MB\|GB\|TB)$/` | `"512MB"` | Hard engine backstop (`SET memory_limit`); ops spill to disk under a computed thread bound rather than OOM. |
@@ -153,21 +154,27 @@ Export a cached dataset to a file with `loom_export`: it writes the dataset as c
 
 Every downstream tool is re-exposed upstream as `<server>_<tool>`, where `<server>` is the config name for that server. Routing is done through an internal bidirectional map (exposed name ⇄ server + original tool name) — never by splitting the exposed name on `_` — so server names containing underscores work correctly. Names that would exceed common client limits (64 chars) are deterministically truncated with a hash suffix; post-sanitization collisions get a numeric suffix. `loom` is a reserved server name so that a `loom_`-prefixed synthetic tool can never collide with a real downstream tool.
 
-## Child environment (read this before putting secrets anywhere)
+## Child environment (default-deny — read this before configuring secrets)
 
-Each downstream child process's environment is **Loom's own environment overlaid with that server's `env` block from config** — not a clean/sandboxed environment. Practical consequence: anything exported in the shell that launches Loom (your `GITHUB_TOKEN`, your `AWS_SECRET_ACCESS_KEY`, everything) is visible to **every** downstream child, not just the one that needs it.
+Each downstream child gets a **curated non-secret base** (`PATH`, `HOME`, `TMPDIR`, locale — plus the Windows equivalents) **plus that server's own `env` block from config** — **not** a copy of the shell that launched Loom. So a secret exported in your launching shell (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, …) is **not** forwarded to downstream servers, and a compromised `npx -y` package cannot read secrets meant for a *different* server.
 
-Put per-server secrets in that server's own `env` block in `loom.config.json`:
+Put per-server secrets in that server's own `env` block:
 
 ```json
 { "name": "repo", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "ghp_..." } }
 ```
 
-Do **not** rely on the launching shell's environment to scope a secret to one server — Loom does not filter or isolate child environments from its own.
+If one server needs an extra **non-secret** var from your shell, opt it in explicitly with `envPassthrough` (default `[]`):
+
+```json
+{ "name": "svc", "command": "...", "envPassthrough": ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"] }
+```
+
+**Boundary — least-privilege, not zero-leak.** This closes the *environment* vector, not every vector. A var you pass through can itself carry a secret (an `HTTPS_PROXY=http://user:pass@host`, a CA path), and a malicious child can still reach the filesystem and network on its own. OS-level per-child isolation (containers, namespaces) is the ceiling and is out of scope for a zero-config stdio proxy — and there is deliberately **no** "inherit everything" flag.
 
 ## Gotchas
 
-- **Child environment is inherited, not sandboxed.** Every downstream child sees Loom's own environment overlaid with its per-server `env`. Put per-server secrets in that server's `env` block, never in the launching shell (full detail in [Child environment](#child-environment-read-this-before-putting-secrets-anywhere) above).
+- **Child environment is default-deny, not inherited.** Downstream children get a curated non-secret base plus their per-server `env` — the launching shell's secrets are **not** forwarded. Opt extra non-secret vars in with `envPassthrough`. Least-privilege, not zero-leak (full detail in [Child environment](#child-environment-default-deny--read-this-before-configuring-secrets) above).
 - **The token threshold is a coarse dial.** Interception fires on a `chars/4` estimate — an order-of-magnitude trigger, not a precise token count, and it undercounts CJK text. Treat `tokenThreshold` as a magnitude knob, not a boundary. The estimate covers the whole result — text blocks plus serialized `structuredContent` when present.
 - **Export is sealed, and it re-serializes in Node.** `loom_export` writes csv/json by serializing the read-lane query result to text **in the Node process** — the engine never writes files (`COPY TO` stays disabled). The cost is a JS-side serialization pass over the exported rows: bounded and well under budget for session-sized datasets (a 100k-row export measured ~0.42s), but real — an export is a copy, not a zero-cost handle.
 - **Dataset refs are session-scoped and evictable.** Refs live only for the conversation and are evicted under memory pressure — implicit query results first, explicit ingests last; materialized refs are pinned and never evicted. Sample rows are arbitrary unless you `ORDER BY`.

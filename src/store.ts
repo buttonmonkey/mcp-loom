@@ -389,7 +389,7 @@ export class ContextMatrix {
     if (!clean) throw new Error('materialize requires a non-empty name');
     // Name-collision check is check-then-act (TOCTOU). Safe by construction here:
     // Loom is single-session and every ref is minted with a unique sequence suffix
-    // (ds_view_<n>_<seq>), so two materializes with the same name resolve to
+    // (ds_view_<name>_<seq>), so two materializes with the same name resolve to
     // distinct refs and cannot corrupt each other. Revisit only if refs ever
     // become caller-chosen or the store goes multi-session (deferral 2).
     if (this.list().some((r) => new RegExp(`^ds_view_${clean}_\\d+$`).test(r.ref))) {

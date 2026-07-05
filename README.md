@@ -120,6 +120,7 @@ Config is a single JSON file, validated with zod at startup; invalid config fail
 | `servers[].args` | array of strings | `[]` | Args passed to `command`. |
 | `servers[].env` | object (string→string) | `{}` | Extra environment variables for **this server's child process only**. See "Child environment" below. |
 | `servers[].envPassthrough` | array of strings | `[]` | Names of extra **non-secret** vars to forward from Loom's own environment to this server's child, on top of the curated safe base (default-deny — the launching shell's env is not copied wholesale). See "Child environment" below. |
+| `servers[].provenanceDenylist` | array of strings | `[]` | This server's tool names whose `provenance.args` are omitted entirely (`"[omitted]"`) from envelopes, `loom_describe`, and `loom_list_datasets` — for tools whose args are nothing but credentials. Other tools keep the heuristic key-based redaction. |
 | `tokenThreshold` | integer ≥ 100 | `2000` | Interception fires when a tabularizable text result exceeds this; a coarse chars/4 order-of-magnitude dial, NOT precise (undercounts CJK). |
 | `memoryBudgetBytes` | integer ≥ 1048576 | `268435456` (256 MiB) | Soft eviction budget on tracked dataset bytes; implicit query-result datasets evict LRU-first, then downstream ingests. |
 | `duckdbMemoryLimit` | string, `/^\d+(\.\d+)?(KB\|MB\|GB\|TB)$/` | `"512MB"` | Hard engine backstop (`SET memory_limit`); ops spill to disk under a computed thread bound rather than OOM. |

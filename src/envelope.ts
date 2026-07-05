@@ -2,6 +2,7 @@
 // interceptor supplies approxTokensSaved after the cost guard (§5 rule 8).
 import { z } from 'zod';
 import type { DatasetRecord, JoinHint, LoomDatasetRef } from './types.js';
+import type { IsDenylisted } from './denylist.js';
 
 const COLUMN_TYPE = z.enum(['BIGINT', 'DOUBLE', 'BOOLEAN', 'VARCHAR']);
 
@@ -38,6 +39,9 @@ function truncate(s: string): string {
 // Recursive, key-based redaction over the full arg structure (objects + arrays,
 // every depth). A denylisted tool omits args entirely. Length truncation is a
 // bound, NOT a secret control — the key regex does the security work (SPEC §5).
+// Direct callers: NEVER hardcode `denylisted` — resolve it from the record's
+// provenance via makeIsDenylisted(server, tool). Hardcoding false here is
+// exactly how a phantom control is born.
 export function redactArgs(args: unknown, denylisted: boolean): unknown {
   if (denylisted) return '[omitted]';
   const walk = (v: unknown): unknown => {
@@ -67,7 +71,9 @@ export interface BuildEnvelopeParams {
   sample: Record<string, unknown>[];
   hints: JoinHint[];
   context: Record<string, unknown>;
-  denylisted: boolean;
+  // Resolves denylisting from record.provenance (server + tool) — computed here,
+  // never threaded as a boolean, so every egress point stays in sync.
+  isDenylisted: IsDenylisted;
   approxTokensSaved: number;
 }
 
@@ -85,7 +91,10 @@ export function buildEnvelope(p: BuildEnvelopeParams): LoomDatasetRef {
     schema: record.profile,
     sample: p.sample.map(truncateSampleRow),
     joinHints: p.hints,
-    provenance: { ...record.provenance, args: redactArgs(record.provenance.args, p.denylisted) },
+    provenance: {
+      ...record.provenance,
+      args: redactArgs(record.provenance.args, p.isDenylisted(record.provenance.server, record.provenance.tool)),
+    },
     context: p.context,
     usage,
   };
@@ -102,6 +111,7 @@ export interface BuildDescriptionParams {
   sample: Record<string, unknown>[];
   hints: JoinHint[];
   ageSeconds: number;
+  isDenylisted: IsDenylisted;
 }
 
 // Describe reuses the envelope build (same schema/redaction/usage path — one
@@ -109,7 +119,7 @@ export interface BuildDescriptionParams {
 export function buildDescription(p: BuildDescriptionParams): LoomDatasetDescription {
   const env = buildEnvelope({
     record: p.record, sample: p.sample, hints: p.hints, context: {},
-    denylisted: false, approxTokensSaved: 0,
+    isDenylisted: p.isDenylisted, approxTokensSaved: 0,
   });
   return { ...env, ageSeconds: p.ageSeconds };
 }

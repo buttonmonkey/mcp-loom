@@ -15,6 +15,8 @@ const ServerSchema = z.object({
   env: z.record(z.string()).default({}),
   // Opt-in passthrough of extra non-secret parent-env vars (default-deny; §8).
   envPassthrough: z.array(z.string()).default([]),
+  // Original tool names whose provenance.args are omitted from egress (§5 rule 7).
+  provenanceDenylist: z.array(z.string()).default([]),
 });
 
 const ConfigSchema = z

@@ -1,6 +1,6 @@
 {
   "name": "mcp-loom",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Stdio MCP proxy: namespaces N downstream MCP servers and intercepts oversized tool results into a queryable embedded DuckDB (dataset envelopes + cross-server SQL).",
   "type": "module",
   "license": "MIT",

@@ -8,6 +8,9 @@ export interface ServerConfig {
   // Extra non-secret parent-env vars to forward beyond SAFE_BASE (default-deny).
   // Optional escape hatch — empty/absent by default; zod fills `[]` for parsed configs.
   envPassthrough?: string[];
+  // Original downstream tool names whose provenance.args are omitted entirely from
+  // envelopes/describe/list (SPEC §5 rule 7). Optional; zod fills `[]`.
+  provenanceDenylist?: string[];
 }
 
 export interface RestartConfig {

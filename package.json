@@ -1,0 +1,26 @@
+{
+  "name": "mcp-loom",
+  "version": "0.1.0",
+  "description": "Stdio MCP proxy: namespaces N downstream MCP servers and intercepts oversized tool results into a queryable embedded DuckDB (dataset envelopes + cross-server SQL).",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/buttonmonkey/mcp-loom.git" },
+  "homepage": "https://github.com/buttonmonkey/mcp-loom#readme",
+  "bugs": "https://github.com/buttonmonkey/mcp-loom/issues",
+  "engines": { "node": ">=20" },
+  "bin": { "mcp-loom": "bin/mcp-loom.mjs" },
+  "files": ["bin", "dist", "README.md", "SPEC.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@duckdb/node-api": "1.5.4-r.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}

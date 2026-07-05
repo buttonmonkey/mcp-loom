@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ExposedTool, ToolRoute, ServerConfig, SessionStatus } from './types.js';
+import { buildChildEnv } from './env.js';
 import { log } from './log.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -86,9 +87,10 @@ export class ClientSession {
   async start(): Promise<void> {
     this.closing = false;
     this.started = false;
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v;
-    Object.assign(env, this.cfg.env); // per-server overlay (SPEC §8)
+    // Default-deny child env: a curated non-secret base + opt-in passthrough, then
+    // the per-server `env` overlay — NOT a wholesale copy of the launching shell,
+    // which would leak every shell secret to every downstream (SPEC §8).
+    const env = buildChildEnv(this.cfg.env, this.cfg.envPassthrough);
 
     const transport = new StdioClientTransport({ command: this.cfg.command, args: this.cfg.args, env });
     const client = new Client({ name: 'mcp-loom', version: '0.0.0' }, { capabilities: {} });

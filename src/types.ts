@@ -5,6 +5,9 @@ export interface ServerConfig {
   command: string;
   args: string[];
   env: Record<string, string>;
+  // Extra non-secret parent-env vars to forward beyond SAFE_BASE (default-deny).
+  // Optional escape hatch — empty/absent by default; zod fills `[]` for parsed configs.
+  envPassthrough?: string[];
 }
 
 export interface RestartConfig {

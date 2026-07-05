@@ -13,6 +13,8 @@ const ServerSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
+  // Opt-in passthrough of extra non-secret parent-env vars (default-deny; §8).
+  envPassthrough: z.array(z.string()).default([]),
 });
 
 const ConfigSchema = z

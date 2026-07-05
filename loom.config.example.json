@@ -1,0 +1,11 @@
+{
+  "servers": [
+    { "name": "repo", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "..." } }
+  ],
+  "tokenThreshold": 2000,
+  "memoryBudgetBytes": 268435456,
+  "duckdbMemoryLimit": "512MB",
+  "exportDir": "./exports",
+  "queryTimeoutMs": 30000,
+  "restart": { "maxAttempts": 5, "baseDelayMs": 1000 }
+}

@@ -20,26 +20,31 @@ export const SYNTHETIC_TOOLS: Tool[] = [
     name: 'loom_query',
     description: QUERY_DESCRIPTION,
     inputSchema: { type: 'object', properties: { sql: { type: 'string' } }, required: ['sql'] },
+    annotations: { title: 'Run SQL over loom datasets', readOnlyHint: true },
   },
   {
     name: 'loom_list_datasets',
     description: LIST_DATASETS_DESCRIPTION,
     inputSchema: { type: 'object', properties: {} },
+    annotations: { title: 'List loom datasets', readOnlyHint: true },
   },
   {
     name: 'loom_describe',
     description: DESCRIBE_DESCRIPTION,
     inputSchema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] },
+    annotations: { title: 'Describe a loom dataset', readOnlyHint: true },
   },
   {
     name: 'loom_export',
     description: EXPORT_DESCRIPTION,
     inputSchema: { type: 'object', properties: { ref: { type: 'string' }, format: { type: 'string', enum: ['csv', 'json'] }, filename: { type: 'string' } }, required: ['ref', 'format'] },
+    annotations: { title: 'Export a loom dataset to a file', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
   {
     name: 'loom_materialize',
     description: MATERIALIZE_DESCRIPTION,
     inputSchema: { type: 'object', properties: { sql: { type: 'string' }, name: { type: 'string' } }, required: ['sql', 'name'] },
+    annotations: { title: 'Materialize a query as a pinned dataset', readOnlyHint: false, destructiveHint: false },
   },
 ];
 

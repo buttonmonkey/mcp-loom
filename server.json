@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.buttonmonkey/mcp-loom",
+  "description": "Stdio MCP proxy: intercepts oversized tool results into a queryable embedded DuckDB.",
+  "repository": {
+    "url": "https://github.com/buttonmonkey/mcp-loom",
+    "source": "github"
+  },
+  "version": "0.3.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "mcp-loom",
+      "version": "0.3.2",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--config",
+          "description": "Path to loom.config.json (absolute path recommended)",
+          "isRequired": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
